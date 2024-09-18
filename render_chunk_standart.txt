@@ -1,0 +1,54 @@
+void Renderer::render_chunk(int start_row, int end_row, SDL_Surface* surface, const HittableList& world,
+    const std::vector<std::shared_ptr<Light>>& lights, const Vec3& background_color,
+    const ParallelBVHNode* bvh, const int samples_per_pass, const int current_sample) {
+    // Camera ve dünya tanımlamaları aynı kalabilir
+    Vec3 lookfrom(-4.95, 1.3, 1.8);
+  Vec3 lookat(2.8, 0.5, -1.3);
+  Vec3 vup(0, 1, 0);
+  int blade_count = 4;
+  double vfov = 35.0;
+  double aperture = 0.0;
+  double focus_dist = 10.45;
+  Camera cam(lookfrom, lookat, vup, vfov, aspect_ratio, aperture, focus_dist, blade_count);
+   
+    // Her iş parçacığı için yerel bir örnekleme indeksi kullanın
+    thread_local int local_sample_index = 0;
+
+    // Chunk içindeki pikselleri işle
+    for (int j = end_row; j >= start_row; --j) {
+        for (int i = 0; i < image_width; ++i) {
+            Vec3 new_color(0, 0, 0);
+            // Accumulate colors from multiple samples
+            for (int s = 0; s < samples_per_pass; ++s) {
+                // Generate ray
+                Vec2 uv = stratified_halton(i, j, local_sample_index, samples_per_pass);
+                Ray r = cam.get_ray(uv.u, uv.v);
+                // Calculate ray color
+                new_color += ray_color(r, bvh, lights, background_color, MAX_DEPTH, local_sample_index);
+            }
+
+            // Mevcut rengi al (lineer uzayda)
+            std::lock_guard<std::mutex> lock(mtx);
+            Uint32* pixel = static_cast<Uint32*>(surface->pixels) + (image_height - 1 - j) * surface->pitch / 4 + i;
+            Uint8 r, g, b;
+            SDL_GetRGB(*pixel, surface->format, &r, &g, &b);
+            Vec3 existing_color(r / 255.0, g / 255.0, b / 255.0);
+            existing_color = Vec3(existing_color.x * existing_color.x, existing_color.y * existing_color.y, existing_color.z * existing_color.z); // Gamma decode
+
+            // Mevcut ve yeni renkleri lineer uzayda birleştir
+            int total_samples = current_sample + samples_per_pass;
+            Vec3 combined_color = (existing_color * current_sample + new_color) / total_samples;
+
+            // Gamma düzeltmesi
+            combined_color = Vec3(sqrt(combined_color.x), sqrt(combined_color.y), sqrt(combined_color.z));
+
+            // Rengi SDL piksel formatına dönüştür
+            int ir = static_cast<int>(256 * clamp(combined_color.x, 0.0, 0.999));
+            int ig = static_cast<int>(256 * clamp(combined_color.y, 0.0, 0.999));
+            int ib = static_cast<int>(256 * clamp(combined_color.z, 0.0, 0.999));
+
+            // SDL yüzeyinde piksel rengini ayarla
+            *pixel = SDL_MapRGB(surface->format, ir, ig, ib);
+        }
+    }
+}
